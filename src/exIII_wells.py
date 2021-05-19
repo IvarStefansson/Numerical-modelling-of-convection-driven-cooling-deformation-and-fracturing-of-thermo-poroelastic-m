@@ -1,15 +1,16 @@
 """
-Example setup and run script for a 3d example with two fractures.
-
+Example setup and run script for a 3d example with two fractures containing
+an injection and production well, respectively.
 """
+
+import logging
+from typing import Tuple
 
 import numpy as np
 import porepy as pp
-import logging
-from typing import Tuple
-from fracture_propagation_model import THMPropagationModel
-import utils
 
+import utils
+from fracture_propagation_model import THMPropagationModel
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +20,8 @@ class Example3Model(THMPropagationModel, pp.THM):
     This class provides the parameter specification differing from examples 1 and 2.
     """
 
-    def set_fields(self, params):
-        super().set_fields(params)
+    def _set_fields(self, params):
+        super()._set_fields(params)
         self.length_scale = params["length_scale"]
 
         self.initial_aperture = 3.0e-4 / self.length_scale
@@ -85,10 +86,6 @@ class Example3Model(THMPropagationModel, pp.THM):
         s = self.box["xmax"]
 
         # The following ugly code refines the grid around the two fractures
-        y_old = np.array([0, 1 / 3]) * s
-        y_new = np.array([0, 0.4]) * s
-        y_values = np.array([0, 7 / ny, 13 / ny, 1.0]) * s
-        z_values = np.array([0, 0.44, 0.56, 1.0]) * s
         z = [0.44, 0.56]
         x = [0.40, 0.6]
 
@@ -102,9 +99,9 @@ class Example3Model(THMPropagationModel, pp.THM):
 
         # Ensure one layer of small cells around fractures
         k = 0.8
-        dx = k * x[0] / (nx / 3)  # (x[1]-x[0])
+        dx = k * x[0] / (nx / 3)
         dy = k * 0.25 / (ny / 4)
-        dz = k * z[0] / (nz / 3)  # (z[1]-z[0])
+        dz = k * z[0] / (nz / 3)
 
         old = np.array([[0, x_0], [0, 1 / 4], [0, 1 / 3 + dz]]) * s
         new = np.array([[0, x[0]], [0, y0 + dy], [0, z[0]]]) * s
@@ -120,18 +117,18 @@ class Example3Model(THMPropagationModel, pp.THM):
         pp.contact_conditions.set_projections(gb)
 
         self.gb = gb
-        self.Nd = self.gb.dim_max()
+        self._Nd = self.gb.dim_max()
 
         # Tag the wells
         self._tag_well_cells()
-        self.n_frac = len(gb.grids_of_dimension(self.Nd - 1))
+        self.n_frac = len(gb.grids_of_dimension(self._Nd - 1))
 
     def _faces_to_fix(self, g):
         """
         Identify three boundary faces to fix (u=0). This should allow us to assign
         Neumann "background stress" conditions on the rest of the boundary faces.
         """
-        all_bf, *_ = self.domain_boundary_sides(g)
+        all_bf, *_ = self._domain_boundary_sides(g)
         point = np.array(
             [
                 [(self.box["xmin"] + self.box["xmax"]) / 2],
@@ -151,7 +148,7 @@ class Example3Model(THMPropagationModel, pp.THM):
         """
         for g, d in self.gb:
             tags = np.zeros(g.num_cells)
-            if g.dim < self.Nd:
+            if g.dim < self._Nd:
                 s = self.box["xmax"]
                 ny = 25
                 # Avoid specifying a point on a face (having non-unique nearest
@@ -174,7 +171,7 @@ class Example3Model(THMPropagationModel, pp.THM):
             g.tags["well_cells"] = tags
             pp.set_state(d, {"well": tags.copy()})
 
-    def source_flow_rates(self) -> Tuple[int, int]:
+    def _source_flow_rates(self) -> Tuple[int, int]:
         """
         The rate is given in l/s = m^3/s e-3. Length scaling also needed to convert from
         the scaled length to m.
@@ -182,13 +179,13 @@ class Example3Model(THMPropagationModel, pp.THM):
         """
         tol = 1e-2
         injection, production = 0, 0
-        if self.time > self.phase_limits[0] + tol:
-            injection, production = 5, 5
+        if self.time > self.phase_limits[1] + tol:
+            injection, production = 5, -5
 
-        w = pp.MILLI * (pp.METER / self.length_scale) ** self.Nd
+        w = pp.MILLI * (pp.METER / self.length_scale) ** self._Nd
         return injection * w, production * w
 
-    def source_scalar(self, g) -> np.ndarray:
+    def _source_scalar(self, g) -> np.ndarray:
         """
         Source term for the scalar equation.
         For slightly compressible flow in the present formulation, this has units of m^3.
@@ -197,14 +194,14 @@ class Example3Model(THMPropagationModel, pp.THM):
         The implicit scheme yields multiplication of the rhs by dt, but
         this is not incorporated in ScalarSource, hence we do it here.
         """
-        rhs = super().source_scalar(g)
-        injection, production = self.source_flow_rates()
+        rhs = super()._source_scalar(g)
+        injection, production = self._source_flow_rates()
         wells = injection * self.time_step * g.tags["well_cells"].clip(min=0)
-        wells += production * self.time_step * g.tags["well_cells"].clip(max=0)
+        wells -= production * self.time_step * g.tags["well_cells"].clip(max=0)
 
         return rhs + wells
 
-    def source_temperature(self, g) -> np.ndarray:
+    def _source_temperature(self, g) -> np.ndarray:
         """
         Sources are handled by ScalarSource discretizations.
         The implicit scheme yields multiplication of the rhs by dt, but
@@ -214,38 +211,44 @@ class Example3Model(THMPropagationModel, pp.THM):
         discretization to ensure the extracted energy matches the current
         production well temperature.
         """
-        injection, production = self.source_flow_rates()
+        injection, production = self._source_flow_rates()
 
         # Injection well
-        t_in = -30
+        dT = -30
+        T_in = self.T_0_Kelvin + dT
         weight = (
-            self.fluid_density(g, dT=t_in * self.temperature_scale)
+            self._fluid_density(g, dT=dT * self.temperature_scale)
             * self.fluid.specific_heat_capacity(self.background_temp_C)
             * self.time_step
             / self.T_0_Kelvin
         )
-        rhs = t_in * weight * injection * g.tags["well_cells"].clip(min=0)
+        rhs = T_in * weight * injection * g.tags["well_cells"].clip(min=0)
 
         # Production well, discretized by MassMatrix on the lhs
         weight = (
-            self.fluid_density(g)
+            self._fluid_density(g)
             * self.fluid.specific_heat_capacity(self.background_temp_C)
             * self.time_step
             / self.T_0_Kelvin
         )
 
-        lhs = -(weight * production * g.tags["well_cells"].clip(max=0) / g.cell_volumes)
+        lhs = (
+            weight
+            * production.clip(max=0)
+            * g.tags["well_cells"].clip(max=0)
+            / g.cell_volumes
+        )
         # HACK: Set this directly into d to avoid additional return
         d = self.gb.node_props(g)
         pp.initialize_data(g, d, self.production_well_key, {"mass_weight": lhs})
         return rhs
 
-    def bc_type_mechanics(self, g) -> pp.BoundaryConditionVectorial:
+    def _bc_type_mechanics(self, g) -> pp.BoundaryConditionVectorial:
         """
         We set Neumann values imitating an anisotropic background stress regime on all
         but three faces, which are fixed to ensure a unique solution.
         """
-        all_bf, east, west, north, south, top, bottom = self.domain_boundary_sides(g)
+        all_bf, east, west, north, south, top, bottom = self._domain_boundary_sides(g)
         faces = self._faces_to_fix(g)
         bc = pp.BoundaryConditionVectorial(g, faces, "dir")
         frac_face = g.tags["fracture_faces"]
@@ -253,14 +256,14 @@ class Example3Model(THMPropagationModel, pp.THM):
         bc.is_dir[:, frac_face] = True
         return bc
 
-    def bc_values_mechanics(self, g) -> np.ndarray:
+    def _bc_values_mechanics(self, g) -> np.ndarray:
         """
         Lithostatic mechanical BC values.
         """
         bc_values = np.zeros((g.dim, g.num_faces))
 
         # Retrieve the boundaries where values are assigned
-        all_bf, east, west, north, south, top, bottom = self.domain_boundary_sides(g)
+        all_bf, east, west, north, south, top, bottom = self._domain_boundary_sides(g)
         A = g.face_areas
 
         # Gravity acceleration
@@ -289,37 +292,37 @@ class Example3Model(THMPropagationModel, pp.THM):
         We prescribe Dirichlet value at the fractures.
         No-flow for the matrix.
         """
-        if g.dim < self.Nd:
+        if g.dim < self._Nd:
             return np.empty(0, dtype=int)
         else:
-            all_bf, *_ = self.domain_boundary_sides(g)
+            all_bf, *_ = self._domain_boundary_sides(g)
             return all_bf
 
-    def bc_values_scalar(self, g) -> np.ndarray:
+    def _bc_values_scalar(self, g) -> np.ndarray:
         """
         Hydrostatic pressure BC values.
         """
         # Retrieve the boundaries where values are assigned
         bf = self._p_and_T_dir_faces(g)
         bc_values = np.zeros(g.num_faces)
-        if g.dim == self.Nd:
+        if g.dim == self._Nd:
             depth = self._depth(g.face_centers[:, bf])
-            bc_values[bf] = self.hydrostatic_pressure(g, depth) / self.scalar_scale
+            bc_values[bf] = self._hydrostatic_pressure(g, depth) / self.scalar_scale
         return bc_values
 
-    def bc_values_temperature(self, g) -> np.ndarray:
+    def _bc_values_temperature(self, g) -> np.ndarray:
         """
         Hydrostatic pressure BC values.
         """
         # Retrieve the boundaries where values are assigned
+        bf = self._p_and_T_dir_faces(g)
         bc_values = np.zeros(g.num_faces)
+        if g.dim == self._Nd:
+            bc_values[bf] = self.T_0_Kelvin
         return bc_values
 
-    def hydrostatic_pressure(self, g, depth: np.ndarray):
+    def _hydrostatic_pressure(self, g, depth: np.ndarray):
         """
-        Iterate to get a "density adjusted" hydrostatic pressure.
-        TODO: Discuss if this makes sense.
-
         Parameters
         ----------
         g : grid.
@@ -342,16 +345,15 @@ class Example3Model(THMPropagationModel, pp.THM):
         """
         # For the initialization run, we use the following
         # start time
-        self.time = 0 * pp.YEAR
+        self.time = -1 * pp.YEAR
         # and time step
-        self.time_step = 0.1 * pp.YEAR
+        self.time_step = -self.time
 
         # We use
         self.end_time = 2.5 * pp.YEAR
         self.max_time_step = self.end_time / 2
-        self.phase_limits = [self.time, 8 * pp.YEAR, self.end_time]
-        self.phase_time_steps = [self.time_step, 1 * pp.YEAR, 1]
-        # self.phase_time_steps = [self.time_step, 5 * pp.HOUR, self.end_time / 15, 1]
+        self.phase_limits = [self.time, 0, self.end_time]
+        self.phase_time_steps = [self.time_step, 0.1 * pp.YEAR, 1]
         self.time_step_factor = 1.0
 
     def _depth(self, coords) -> np.ndarray:
@@ -360,32 +362,31 @@ class Example3Model(THMPropagationModel, pp.THM):
         """
         return 2 * pp.KILO * pp.METER - self.length_scale * coords[2] * self.gravity_on
 
-    def assign_discretizations(self) -> None:
-
+    def _assign_discretizations(self) -> None:
         """
         Mass matrix for temperature production well.
         """
         # Call parent class for disrcetizations.
-        super().assign_discretizations()
+        super()._assign_discretizations()
 
         discr = pp.MassMatrix(self.production_well_key)
         for g, d in self.gb:
-            if g.dim == self.Nd - 1:
+            if g.dim == self._Nd - 1:
                 d[pp.DISCRETIZATION][self.temperature_variable].update(
                     {"production_well": discr}
                 )
 
-    def export_step(self):
+    def _export_step(self):
         """
         Save pressure and temperature values for the two well cells.
 
         Stored as self.pressures and self.temperatures, used to produce plots.
         """
-        super().export_step()
-        pressures = np.zeros(len(self.gb.grids_of_dimension(self.Nd - 1)))
-        temperatures = np.zeros(len(self.gb.grids_of_dimension(self.Nd - 1)))
+        super()._export_step()
+        pressures = np.zeros(len(self.gb.grids_of_dimension(self._Nd - 1)))
+        temperatures = np.zeros(len(self.gb.grids_of_dimension(self._Nd - 1)))
 
-        for i, g in enumerate(self.gb.grids_of_dimension(self.Nd - 1)):
+        for i, g in enumerate(self.gb.grids_of_dimension(self._Nd - 1)):
             d = self.gb.node_props(g)
             T = d[pp.STATE][self.temperature_variable] * self.temperature_scale
             p = d[pp.STATE][self.scalar_variable] * self.scalar_scale
@@ -404,8 +405,6 @@ class Example3Model(THMPropagationModel, pp.THM):
         In addition to super's mapping an initialization of all primary variables
         and face values (darcy_fluxes and stored boundary conditions), map
         quantities to be exported.
-
-
         """
         new_solution = super()._map_variables(solution)
         # EK: Rudimentary treatment of variables that must be updated for the code
@@ -422,10 +421,10 @@ class Example3Model(THMPropagationModel, pp.THM):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    folder_name = "exIII"
+    folder_name = "exIII_revision"
     params = {
         "folder_name": folder_name,
-        "nl_convergence_tol": 2e-6,
+        "nl_convergence_tol": 2e-7,
         "max_iterations": 60,
         "file_name": "forced_convection",
         "length_scale": 10,
@@ -433,14 +432,14 @@ if __name__ == "__main__":
         "nx": 36,  # multiple of 6
         "ny": 48,  # multiple of 12
         "nz": 36,  # multiple of 6
-        "prepare_umfpack": True,
+        "prepare_umfpack": False,
     }
 
     m = Example3Model(params)
-    m.compute_initial_displacement()
+    m._compute_initial_displacement()
 
     pp.run_time_dependent_model(m, params)
-    m.export_pvd()
+    m._export_pvd()
     data = {
         "fracture_sizes": m.fracture_sizes,
         "time_steps": m.export_times,

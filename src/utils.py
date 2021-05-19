@@ -1,28 +1,32 @@
+import itertools
+import os
 import pickle
 from pathlib import Path
-import os
-import numpy as np
+
 import matplotlib
 import matplotlib.pyplot as plt
+import numpy as np
 import seaborn as sns
-import itertools
+
 
 def transform(old, new, g, i):
     xold = g.nodes[i]
     x = old[i]
     y = new[i]
-    xnew = (y[1]-y[0]) * (xold-x[0]) / (x[1]-x[0]) + y[0]
+    xnew = (y[1] - y[0]) * (xold - x[0]) / (x[1] - x[0]) + y[0]
     eps = 1e-6
     ind = np.logical_and(xold + eps > x[0], xold - eps <= x[1])
-    g.nodes[i, ind] = xnew[ind]            
+    g.nodes[i, ind] = xnew[ind]
+
 
 def adjust_nodes(gb, old, new):
     for g, d in gb:
         for i in range(gb.dim_max()):
             transform(old, new, g, i)
 
+
 def write_pickle(obj, path):
-    """ Write any object to pickle
+    """Write any object to pickle
 
     Parameters
     ----------
@@ -38,8 +42,7 @@ def write_pickle(obj, path):
 
 
 def read_pickle(path):
-    """ Read a stored object
-    """
+    """Read a stored object"""
     with open(path, "rb") as f:
         raw = f.read()
     return pickle.loads(raw)
@@ -49,7 +52,7 @@ def write_fracture_data_txt(setup):
     """
     Write data summarizing the results to csv files. Four files are written:
         time steps
-        Newton iterations for all time steps    
+        Newton iterations for all time steps
         normal displacement jumps on all fractures for all time steps
         tangential displacement jumps on all fractures for all time steps
     """
@@ -79,13 +82,11 @@ def write_fracture_data_txt(setup):
 
 def prepare_plotting(**kwargs):
     plt.close("all")
-    matplotlib.use("agg", warn=False, force=True)  # force non-GUI backend.
+    matplotlib.use("agg", force=True)  # force non-GUI backend.
 
     # Number of floating points
     mf = matplotlib.ticker.ScalarFormatter(useMathText=True)
     mf.set_powerlimits((-4, 4))
-
-    # Plotting
 
     # Preparing plot
     sns.set_context("paper")  # set scale and size of figures
@@ -103,5 +104,7 @@ def prepare_plotting(**kwargs):
     )
     return fig, gs
 
+
+model_labels = [r"$M_0$", r"$M_1$", r"$M_2$"]
 
 colors_rgb = ["#b90000", "#00af00", "#0000b9"]

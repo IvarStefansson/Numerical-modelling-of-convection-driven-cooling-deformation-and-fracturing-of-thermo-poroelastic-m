@@ -1,13 +1,14 @@
 """
-Example setup and run script for a 3d example with five fractures.
-
+Example setup and run script for a 3d example with five vertical fractures.
 """
+
+import logging
 
 import numpy as np
 import porepy as pp
-import logging
-from fracture_propagation_model import THMPropagationModel
+
 import utils
+from fracture_propagation_model import THMPropagationModel
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +18,8 @@ class CDM(THMPropagationModel, pp.THM):
     This class provides the parameter specification differing from examples 1 and 2.
     """
 
-    def set_fields(self, params):
-        super().set_fields(params)
+    def _set_fields(self, params):
+        super()._set_fields(params)
         self.length_scale = params["length_scale"]
 
         self.initial_aperture = 2e-3 / self.length_scale
@@ -68,7 +69,7 @@ class CDM(THMPropagationModel, pp.THM):
         Identify three boundary faces to fix (u=0). This should allow us to assign
         Neumann "background stress" conditions on the rest of the boundary faces.
         """
-        all_bf, *_ = self.domain_boundary_sides(g)
+        all_bf, *_ = self._domain_boundary_sides(g)
         point = np.array(
             [
                 [(self.box["xmin"] + self.box["xmax"]) / 2],
@@ -82,12 +83,12 @@ class CDM(THMPropagationModel, pp.THM):
         faces = all_bf[indexes[:3]]
         return faces
 
-    def bc_type_mechanics(self, g) -> pp.BoundaryConditionVectorial:
+    def _bc_type_mechanics(self, g) -> pp.BoundaryConditionVectorial:
         """
         We set Neumann values imitating an anisotropic background stress regime on all
         but three faces, which are fixed to ensure a unique solution.
         """
-        all_bf, east, west, north, south, top, bottom = self.domain_boundary_sides(g)
+        all_bf, east, west, north, south, top, bottom = self._domain_boundary_sides(g)
         faces = self._faces_to_fix(g)
         bc = pp.BoundaryConditionVectorial(g, faces, "dir")
         frac_face = g.tags["fracture_faces"]
@@ -95,12 +96,12 @@ class CDM(THMPropagationModel, pp.THM):
         bc.is_dir[:, frac_face] = True
         return bc
 
-    def bc_values_mechanics(self, g) -> np.ndarray:
+    def _bc_values_mechanics(self, g) -> np.ndarray:
         """Anisotropic mechanical BC values based on lithostatic traction."""
         bc_values = np.zeros((g.dim, g.num_faces))
 
         # Retrieve the boundaries where values are assigned
-        all_bf, east, west, north, south, top, bottom = self.domain_boundary_sides(g)
+        all_bf, east, west, north, south, top, bottom = self._domain_boundary_sides(g)
         A = g.face_areas
 
         # Gravity acceleration
@@ -130,10 +131,10 @@ class CDM(THMPropagationModel, pp.THM):
         We prescribe Dirichlet value at the fractures.
         No-flow for the matrix.
         """
-        all_bf, *_ = self.domain_boundary_sides(g)
+        all_bf, *_ = self._domain_boundary_sides(g)
         return all_bf
 
-    def bc_values_scalar(self, g) -> np.ndarray:
+    def _bc_values_scalar(self, g) -> np.ndarray:
         """
         Hydrostatic pressure BC values.
         """
@@ -141,25 +142,30 @@ class CDM(THMPropagationModel, pp.THM):
         bf = self._p_and_T_dir_faces(g)
         bc_values = np.zeros(g.num_faces)
         depth = self._depth(g.face_centers[:, bf])
-        bc_values[bf] = self.hydrostatic_pressure(g, depth) / self.scalar_scale
+        bc_values[bf] = self._hydrostatic_pressure(g, depth) / self.scalar_scale
         return bc_values
 
-    def bc_values_temperature(self, g) -> np.ndarray:
+    def _bc_values_temperature(self, g) -> np.ndarray:
         """
         Cooling at the top of the fracture
         """
         # Retrieve the boundaries where values are assigned
         bf = self._p_and_T_dir_faces(g)
         bc_values = np.zeros(g.num_faces)
-        bc_values[bf] = (self.box["zmax"] - g.face_centers[2, bf]) * self.T_gradient
+        # if g.dim == self._Nd:
+        bc_values[bf] = (
+            self.box["zmax"] - g.face_centers[2, bf]
+        ) * self.T_gradient + self.T_0_Kelvin
         return bc_values
 
-    def set_rock_and_fluid(self):
-        super().set_rock_and_fluid()
+    def _set_rock_and_fluid(self):
+        super()._set_rock_and_fluid()
         self.rock.PERMEABILITY = 1e-16
 
-    def initial_temperature(self, g) -> np.ndarray:
-        return (self.box["zmax"] - g.cell_centers[2]) * self.T_gradient
+    def _initial_temperature(self, g) -> np.ndarray:
+        return (
+            self.box["zmax"] - g.cell_centers[2]
+        ) * self.T_gradient + self.T_0_Kelvin
 
     def _depth(self, coords) -> np.ndarray:
         """
@@ -167,7 +173,7 @@ class CDM(THMPropagationModel, pp.THM):
         """
         return 3.0 * pp.KILO * pp.METER - self.length_scale * coords[2]
 
-    def hydrostatic_pressure(self, g, depth: np.ndarray):
+    def _hydrostatic_pressure(self, g, depth: np.ndarray):
         """
 
         Parameters
@@ -207,15 +213,15 @@ class CDM(THMPropagationModel, pp.THM):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
-    folder_name = "exIV"
+    folder_name = "exIV_revision"
     params = {
         "folder_name": folder_name,
         "nl_convergence_tol": 5e-6,
         "max_iterations": 60,
         "file_name": "natural_convection",
         "mesh_args": {},
-        "length_scale": 10,
-        "size": 400 / 10,
+        "length_scale": 100,
+        "size": 400 / 100,
         "max_memory": 7e7,
         "nx": 36,  # multiple of (n_fracs+1)=6 along x axis
         "ny": 40,  # ny should be multiple of four, since fractures extend from .25 to .75
@@ -224,9 +230,9 @@ if __name__ == "__main__":
     }
 
     m = CDM(params)
-    m.compute_initial_displacement()
+    m._compute_initial_displacement()
     pp.run_time_dependent_model(m, params)
-    m.export_pvd()
+    m._export_pvd()
     data = {
         "fracture_sizes": m.fracture_sizes,
         "time_steps": m.export_times,

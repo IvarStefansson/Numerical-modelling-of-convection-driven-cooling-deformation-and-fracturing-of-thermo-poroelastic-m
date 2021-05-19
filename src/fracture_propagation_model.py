@@ -1,16 +1,16 @@
 """
-Model class to be used together with an existing/"physical" model to yield a full propagation
-model.
+Model class to be used together with an existing/"physical" model to yield a 
+full propagation model.
 
 Will also be combined with case specific parameters.
 """
-import scipy.sparse as sps
+import logging
 import time
+from typing import Any, Dict
+
 import numpy as np
 import porepy as pp
-import logging
-from typing import Dict, Any
-
+import scipy.sparse as sps
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ class TensilePropagation(pp.ConformingFracturePropagation):
 
         Workflow:
             Check that the face_l is permissible
-            Identify the corresponding edges_h (= nodes if self.Nd==2)
+            Identify the corresponding edges_h (= nodes if self._Nd==2)
             The edges' faces_h are candidates for propagation
             Pick the candidate based on the propagation angle
 
@@ -79,7 +79,7 @@ class TensilePropagation(pp.ConformingFracturePropagation):
         lower- and higherdimensional faces. During grid updates, the former will receive
         a new neighbour cell and the latter will be split.
         """
-        nd = self.Nd
+        nd = self._Nd
         # EK: I am almost sure this method is not used, and can be deleted.
         # Leave a breakpoint here, and take action if ever hit it.
         # NOTE: If we hit it, the signature of this method is likely wrong (at least it
@@ -242,7 +242,7 @@ class THMPropagationModel(TensilePropagation):
         super().__init__(params)
         pp.THM.__init__(self, params)
         # Set additional case specific fields
-        self.set_fields(params)
+        self._set_fields(params)
 
     ## THM + propagation specific methods
     def _initialize_new_variable_values(
@@ -327,12 +327,12 @@ class THMPropagationModel(TensilePropagation):
 
         for g, d in gb:
             face_map: sps.spmatrix = d["face_index_map"]
-            mapping = sps.kron(face_map, sps.eye(self.Nd))
+            mapping = sps.kron(face_map, sps.eye(self._Nd))
             # Map darcy fluxes
             d[pp.PARAMETERS][t_key]["darcy_flux"] = (
                 face_map * d[pp.PARAMETERS][t_key]["darcy_flux"]
             )
-            if g.dim == self.Nd:
+            if g.dim == self._Nd:
                 # Duplicate darcy_fluxes for new faces ("other" side of new fracture)
                 new_faces = d["new_faces"]
                 old_faces = d["split_faces"]
@@ -343,10 +343,10 @@ class THMPropagationModel(TensilePropagation):
                 for key in keys:
                     old_vals = d[pp.PARAMETERS][key]["bc_values"]
                     new_vals = mapping * old_vals
-                    new_ind = pp.fvutils.expand_indices_nd(d["new_faces"], self.Nd)
+                    new_ind = pp.fvutils.expand_indices_nd(d["new_faces"], self._Nd)
                     if new_ind.size > 0:
                         old_ind = pp.fvutils.expand_indices_nd(
-                            d["split_faces"], self.Nd
+                            d["split_faces"], self._Nd
                         )
                         new_vals[new_ind] = old_vals[old_ind]
                     d[pp.STATE][key]["bc_values"] = new_vals
@@ -394,13 +394,13 @@ class THMPropagationModel(TensilePropagation):
 
         # Update apertures and specific volumes (e.g. compute from displacement jumps).
         # Store as iterate information.
-        self.update_all_apertures(to_iterate=True)
+        self._update_all_apertures(to_iterate=True)
 
         # Update parameters.
-        # Depending on the implementation of set_parameters, this can for instance
+        # Depending on the implementation of _set_parameters, this can for instance
         # update permeability as a function of aperture. Similarly, various other
         # quantities can be updated.
-        self.set_parameters()
+        self._set_parameters()
 
         ###
         # With updated parameters (including Darcy fluxes), we can now discretize
@@ -408,13 +408,12 @@ class THMPropagationModel(TensilePropagation):
 
         # Discretize everything except terms relating to poro-elasticity and
         # diffusion (that is, discretize everything not handled by mpfa or mpsa).
-        # NOTE: Accumulation terms in self.Nd could also have been excluded.
+        # NOTE: Accumulation terms in self._Nd could also have been excluded.
         term_list = [
             "!mpsa",
             "!stabilization",
             "!div_u",
             "!grad_p",
-            "!diffusion",
         ]
         filt = pp.assembler_filters.ListFilter(term_list=term_list)
         # NOTE: No grid filter here, in pratice, all terms on lower-dimensional grids
@@ -422,7 +421,7 @@ class THMPropagationModel(TensilePropagation):
         self.assembler.discretize(filt=filt)
 
         # Discretize diffusion terms on lower-dimensional grids.
-        for dim in range(self.Nd):
+        for dim in range(self._Nd):
             grid_list = self.gb.grids_of_dimension(dim)
             if len(grid_list) == 0:
                 continue
@@ -431,17 +430,6 @@ class THMPropagationModel(TensilePropagation):
                 term_list=["diffusion"],
             )
             self.assembler.discretize(filt=filt)
-
-    def after_propagation_loop(self):
-        """
-        TODO: Purge.
-
-        Returns
-        -------
-        None.
-
-        """
-        ValueError("should not call this")
 
     def after_newton_iteration(self, solution: np.ndarray) -> None:
 
@@ -459,8 +447,8 @@ class THMPropagationModel(TensilePropagation):
         gb = self.gb
 
         # We export the converged solution *before* propagation:
-        self.update_all_apertures(to_iterate=True)
-        self.export_step()
+        self._update_all_apertures(to_iterate=True)
+        self._export_step()
         # NOTE: Darcy fluxes were updated in self.after_newton_iteration().
         # The fluxes are mapped to the new geometry (and fluxes are assigned for
         # newly formed faces) by the below call to self._map_variables().
@@ -475,7 +463,7 @@ class THMPropagationModel(TensilePropagation):
             # Update parameters and discretization
 
             for g, d in gb:
-                if g.dim < self.Nd - 1:
+                if g.dim < self._Nd - 1:
                     # Should be really careful in this situation. Fingers crossed.
                     continue
 
@@ -501,11 +489,11 @@ class THMPropagationModel(TensilePropagation):
             new_solution = self._map_variables(solution)
 
             # Update apertures: Both state (time step) and iterate.
-            self.update_all_apertures(to_iterate=False)
-            self.update_all_apertures(to_iterate=True)
+            self._update_all_apertures(to_iterate=False)
+            self._update_all_apertures(to_iterate=True)
 
             # Set new parameters.
-            self.set_parameters()
+            self._set_parameters()
             # For now, update discretizations will do a full rediscretization
             # TODO: Replace this with a targeted rediscretization.
             # We may want to use some of the code below (after return), but not all of
@@ -519,7 +507,7 @@ class THMPropagationModel(TensilePropagation):
         # fracture propgation
         super().after_newton_convergence(new_solution, errors, iteration_counter)
 
-        self.adjust_time_step()
+        self._adjust_time_step()
 
         # Done!
         return
@@ -554,8 +542,13 @@ class THMPropagationModel(TensilePropagation):
         for key in data["mechanics"]:
             mech[key] = data["mechanics"][key].copy()
 
-        self.discretize_biot(update_after_geometry_change=False)
-
+        self._discretize_biot(update_after_geometry_change=False)
+        filt = pp.assembler_filters.ListFilter(
+            variable_list=[self.scalar_variable],
+            term_list=["diffusion", "mass", "source"],
+            grid_list=[g_max],
+        )
+        self.assembler.discretize(filt=filt)
         for e, _ in gb.edges_of_node(g_max):
             grid_list.append((e[0], e[1], e))
 
@@ -581,7 +574,7 @@ class THMPropagationModel(TensilePropagation):
         # self.compute_fluxes()
 
         # Update biot. Should be cheap.
-        self.copy_biot_discretizations()
+        self._copy_biot_discretizations()
         # No need to update source term
 
         # Then the temperature discretizations. These are updated, to avoid full mpfa
@@ -615,7 +608,7 @@ class THMPropagationModel(TensilePropagation):
 
         # Finally, discretize terms on the lower-dimensional grids. This can be done
         # in the traditional way, as there is no Biot discretization here.
-        for dim in range(0, self.Nd):
+        for dim in range(0, self._Nd):
             grid_list = self.gb.grids_of_dimension(dim)
             if len(grid_list) > 0:
                 filt = pp.assembler_filters.ListFilter(grid_list=grid_list)
@@ -624,7 +617,7 @@ class THMPropagationModel(TensilePropagation):
         logger.info("Rediscretized in {} s.".format(time.time() - t_0))
 
     ## Methods specific to this project, but common to (some of) the examples
-    def set_fields(self, params):
+    def _set_fields(self, params):
         """
         Set various fields to be used in the model.
         """
@@ -655,7 +648,7 @@ class THMPropagationModel(TensilePropagation):
 
         The geometry is defined through the method self._fractures() and the
         domain sizes stored in the dictionary self.box.
-        This method sets self.gb and self.Nd.
+        This method sets self.gb and self._Nd.
         """
 
         # Define fractures
@@ -675,20 +668,20 @@ class THMPropagationModel(TensilePropagation):
         pp.contact_conditions.set_projections(gb)
 
         self.gb = gb
-        self.Nd = self.gb.dim_max()
+        self._Nd = self.gb.dim_max()
 
         # Tag the wells
         self._tag_well_cells()
-        self.n_frac = len(gb.grids_of_dimension(self.Nd - 1))
+        self.n_frac = len(gb.grids_of_dimension(self._Nd - 1))
 
     # Numerics
-    def assign_discretizations(self) -> None:
+    def _assign_discretizations(self) -> None:
         """
         For long time steps, scaling the diffusive interface fluxes in the non-default
         way turns out to actually be beneficial for the condition number.
         """
         # Call parent class for disrcetizations.
-        super().assign_discretizations()
+        super()._assign_discretizations()
 
         for e, d in self.gb.edges():
             d[pp.COUPLING_DISCRETIZATION][self.temperature_coupling_term][e][
@@ -723,31 +716,30 @@ class THMPropagationModel(TensilePropagation):
 
     def check_convergence(self, solution, prev_solution, init_solution, nl_params=None):
         g_max = self._nd_grid()
-        uh_dof = self.assembler.dof_ind(g_max, self.displacement_variable)
+        dof_m = self.dof_manager
+        uh_dof = dof_m.dof_ind(g_max, self.displacement_variable)
         p_dof = np.array([], dtype=np.int)
         T_dof = np.array([], dtype=np.int)
         contact_dof = np.array([], dtype=np.int)
         for g, _ in self.gb:
-            p_dof = np.hstack((p_dof, self.assembler.dof_ind(g, self.scalar_variable)))
-            T_dof = np.hstack(
-                (T_dof, self.assembler.dof_ind(g, self.temperature_variable))
-            )
-            if g.dim == self.Nd - 1:
+            p_dof = np.hstack((p_dof, dof_m.dof_ind(g, self.scalar_variable)))
+            T_dof = np.hstack((T_dof, dof_m.dof_ind(g, self.temperature_variable)))
+            if g.dim == self._Nd - 1:
                 contact_dof = np.hstack(
                     (
                         contact_dof,
-                        self.assembler.dof_ind(g, self.contact_traction_variable),
+                        dof_m.dof_ind(g, self.contact_traction_variable),
                     )
                 )
 
         # Also find indices for the contact variables
         uj_dof = np.array([], dtype=np.int)
         for e, _ in self.gb.edges():
-            if e[0].dim == self.Nd:
+            if e[0].dim == self._Nd:
                 uj_dof = np.hstack(
                     (
                         uj_dof,
-                        self.assembler.dof_ind(e, self.mortar_displacement_variable),
+                        dof_m.dof_ind(e, self.mortar_displacement_variable),
                     )
                 )
 
@@ -807,7 +799,7 @@ class THMPropagationModel(TensilePropagation):
         )
         return error_uh, converged, diverged
 
-    def adjust_time_step(self):
+    def _adjust_time_step(self):
         """
         Adjust the time step so that smaller time steps are used when the driving forces
         are changed. Also make sure to exactly reach the start and end time for
@@ -834,7 +826,7 @@ class THMPropagationModel(TensilePropagation):
 
         For 3d, the fluxes are damped after the fourth iteration.
         """
-        use_smoothing = self.Nd == 3
+        use_smoothing = self._Nd == 3
         gb = self.gb
         for g, d in gb:
             pa = d[pp.PARAMETERS][self.temperature_parameter_key]
@@ -879,7 +871,7 @@ class THMPropagationModel(TensilePropagation):
         )
 
     # Initialization etc.
-    def initial_condition(self) -> None:
+    def _initial_condition(self) -> None:
         """Initial values for the Darcy fluxes, p, T and u."""
         for g, d in self.gb:
             d[pp.PARAMETERS] = pp.Parameters()
@@ -891,20 +883,21 @@ class THMPropagationModel(TensilePropagation):
                     self.temperature_parameter_key,
                 ]
             )
-        self.update_all_apertures(to_iterate=False)
-        self.update_all_apertures()
-        super().initial_condition()
+        self._update_all_apertures(to_iterate=False)
+        self._update_all_apertures()
+        super()._initial_condition()
 
         for g, d in self.gb:
-            u0 = self.initial_displacement(g)
+            u0 = self._initial_displacement(g)
             d[pp.PARAMETERS][self.temperature_parameter_key].update(
                 {"darcy_flux": np.zeros(g.num_faces)}
             )
-            p0 = self.initial_scalar(g)
-            T0 = self.initial_temperature(g)
+            p0 = self._initial_scalar(g)
+            T0 = self._initial_temperature(g)
             state = {
                 self.scalar_variable: p0,
                 self.temperature_variable: T0,
+                self.displacement_variable: u0,
             }
             iterate = {
                 self.scalar_variable: p0,
@@ -915,29 +908,29 @@ class THMPropagationModel(TensilePropagation):
             pp.set_state(d, state)
             pp.set_iterate(d, iterate)
         for e, d in self.gb.edges():
-            update = {self.mortar_displacement_variable: self.initial_displacement(e)}
+            update = {self.mortar_displacement_variable: self._initial_displacement(e)}
             pp.set_state(d, update)
             pp.set_iterate(d, update)
 
-    def initial_scalar(self, g) -> np.ndarray:
+    def _initial_scalar(self, g) -> np.ndarray:
         """Hydrostatic pressure depending on _depth, which is set to 0 in exII."""
         depth = self._depth(g.cell_centers)
-        return self.hydrostatic_pressure(g, depth) / self.scalar_scale
+        return self._hydrostatic_pressure(g, depth) / self.scalar_scale
 
-    def initial_temperature(self, g) -> np.ndarray:
+    def _initial_temperature(self, g) -> np.ndarray:
         """Initial temperature is 0, but set to f(z) in exIV."""
-        return np.zeros(g.num_cells)
+        return self.T_0_Kelvin * np.ones(g.num_cells)
 
-    def initial_displacement(self, g):
+    def _initial_displacement(self, g):
         if isinstance(g, tuple):
             d = self.gb.edge_props(g)
             nc = d["mortar_grid"].num_cells
         else:
             d = self.gb.node_props(g)
             nc = g.num_cells
-        return d[pp.STATE].get("initial_displacement", np.zeros((self.Nd * nc)))
+        return d[pp.STATE].get("initial_displacement", np.zeros((self._Nd * nc)))
 
-    def compute_initial_displacement(self):
+    def _compute_initial_displacement(self):
         """Is run prior to a time-stepping scheme. Use this to initialize
         displacement consistent with the given BCs, initial pressure and initial
         temperature.
@@ -972,8 +965,8 @@ class THMPropagationModel(TensilePropagation):
             self.scalar_coupling_term,
             "empty",
             "source",
-            # "matrix_temperature_to_force_balance",
-            # "matrix_scalar_to_force_balance",
+            "matrix_temperature_to_force_balance",
+            "matrix_scalar_to_force_balance",
         ]
         filt = pp.assembler_filters.ListFilter(term_list=terms)
         A, b = self.assembler.assemble_matrix_rhs(filt=filt)
@@ -983,12 +976,12 @@ class THMPropagationModel(TensilePropagation):
             A.indptr = A.indptr.astype(np.int64)
         x = sps.linalg.spsolve(A, b)
         self.assembler.distribute_variable(x)
-        # Store the initial displacement (see method initial_displacement)
+        # Store the initial displacement (see method _initial_displacement)
         g = self._nd_grid()
         d = self.gb.node_props(g)
         d[pp.STATE]["initial_displacement"] = d[pp.STATE][var_d].copy()
         for e, d in self.gb.edges():
-            if e[0].dim == self.Nd:
+            if e[0].dim == self._Nd:
                 d[pp.STATE]["initial_displacement"] = d[pp.STATE][
                     self.mortar_displacement_variable
                 ].copy()
@@ -1001,21 +994,21 @@ class THMPropagationModel(TensilePropagation):
         first = not hasattr(self, "gb") or self.gb is None
         if first:
             self.create_grid()
-            self.update_all_apertures(to_iterate=False)
-            self.update_all_apertures()
+            self._update_all_apertures(to_iterate=False)
+            self._update_all_apertures()
             self._set_time_parameters()
-            self.set_rock_and_fluid()
-        self.initial_condition()
-        self.set_parameters()
+            self._set_rock_and_fluid()
+        self._initial_condition()
+        self._set_parameters()
         if first:
-            self.assign_variables()
-            self.assign_discretizations()
-            self.discretize()
+            self._assign_variables()
+            self._assign_discretizations()
+            self._discretize()
         # Initialize Darcy fluxes
         self.compute_fluxes()
 
-        self.initialize_linear_solver()
-        self.export_step()
+        self._initialize_linear_solver()
+        self._export_step()
 
     def _tag_well_cells(self):
         """
@@ -1025,25 +1018,25 @@ class THMPropagationModel(TensilePropagation):
         pass
 
     # Apertures and specific volumes
-    def aperture(self, g, from_iterate=True) -> np.ndarray:
+    def _aperture(self, g, from_iterate=True) -> np.ndarray:
         """
-        Obtain the aperture of a subdomain. See update_all_apertures.
+        Obtain the aperture of a subdomain. See _update_all_apertures.
         """
         if from_iterate:
             return self.gb.node_props(g)[pp.STATE][pp.ITERATE]["aperture"]
         else:
             return self.gb.node_props(g)[pp.STATE]["aperture"]
 
-    def specific_volumes(self, g, from_iterate=True) -> np.ndarray:
+    def _specific_volumes(self, g, from_iterate=True) -> np.ndarray:
         """
-        Obtain the specific volume of a subdomain. See update_all_apertures.
+        Obtain the specific volume of a subdomain. See _update_all_apertures.
         """
         if from_iterate:
             return self.gb.node_props(g)[pp.STATE][pp.ITERATE]["specific_volume"]
         else:
             return self.gb.node_props(g)[pp.STATE]["specific_volume"]
 
-    def update_all_apertures(self, to_iterate=True):
+    def _update_all_apertures(self, to_iterate=True):
         """
         To better control the aperture computation, it is done for the entire gb by a
         single function call. This also allows us to ensure the fracture apertures
@@ -1055,7 +1048,7 @@ class THMPropagationModel(TensilePropagation):
         for g, d in gb:
 
             apertures = np.ones(g.num_cells)
-            if g.dim == (self.Nd - 1):
+            if g.dim == (self._Nd - 1):
                 # Initial aperture
 
                 apertures *= self.initial_aperture
@@ -1088,7 +1081,7 @@ class THMPropagationModel(TensilePropagation):
         for g, d in gb:
             parent_apertures = []
             num_parent = []
-            if g.dim < (self.Nd - 1):
+            if g.dim < (self._Nd - 1):
                 for edges in gb.edges_of_node(g):
                     e = edges[0]
                     g_h = e[0]
@@ -1096,7 +1089,7 @@ class THMPropagationModel(TensilePropagation):
                     if g_h == g:
                         g_h = e[1]
 
-                    if g_h.dim == (self.Nd - 1):
+                    if g_h.dim == (self._Nd - 1):
                         d_h = gb.node_props(g_h)
                         if to_iterate:
                             a_h = d_h[pp.STATE][pp.ITERATE]["aperture"]
@@ -1122,7 +1115,7 @@ class THMPropagationModel(TensilePropagation):
                 apertures = np.sum(parent_apertures, axis=0) / num_parents
 
                 specific_volumes = np.power(
-                    apertures, self.Nd - g.dim
+                    apertures, self._Nd - g.dim
                 )  # Could also be np.product(parent_apertures, axis=0)
                 if to_iterate:
                     pp.set_iterate(
@@ -1142,29 +1135,29 @@ class THMPropagationModel(TensilePropagation):
         return apertures
 
     # Parameter assignment
-    def set_mechanics_parameters(self):
+    def _set_mechanics_parameters(self):
         """Mechanical parameters.
         Note that we divide the momentum balance equation by self.scalar_scale.
         A homogeneous initial temperature is assumed.
         """
         gb = self.gb
         for g, d in gb:
-            if g.dim == self.Nd:
+            if g.dim == self._Nd:
                 # Rock parameters
                 rock = self.rock
                 lam = rock.LAMBDA * np.ones(g.num_cells) / self.scalar_scale
                 mu = rock.MU * np.ones(g.num_cells) / self.scalar_scale
                 C = pp.FourthOrderTensor(mu, lam)
 
-                bc = self.bc_type_mechanics(g)
-                bc_values = self.bc_values_mechanics(g)
-                sources = self.source_mechanics(g)
+                bc = self._bc_type_mechanics(g)
+                bc_values = self._bc_values_mechanics(g)
+                sources = self._source_mechanics(g)
 
                 # In the momentum balance, the coefficient hits the scalar, and should
                 # not be scaled. Same goes for the energy balance, where we divide all
                 # terms by T_0, hence the term originally beta K T d(div u) / dt becomes
                 # beta K d(div u) / dt = coupling_coefficient d(div u) / dt.
-                coupling_coefficient = self.biot_alpha(g)
+                coupling_coefficient = self._biot_alpha(g)
 
                 pp.initialize_data(
                     g,
@@ -1179,6 +1172,7 @@ class THMPropagationModel(TensilePropagation):
                         "time_step": self.time_step,
                         "shear_modulus": self.rock.MU,
                         "poisson_ratio": self.rock.POISSON_RATIO,
+                        "p_reference": np.zeros(g.num_cells),
                     },
                 )
 
@@ -1187,12 +1181,13 @@ class THMPropagationModel(TensilePropagation):
                     d,
                     self.mechanics_temperature_parameter_key,
                     {
-                        "biot_alpha": self.biot_beta(g),
+                        "biot_alpha": self._biot_beta(g),
                         "bc_values": bc_values,
+                        "p_reference": self.T_0_Kelvin * np.ones(g.num_cells),
                     },
                 )
-            elif g.dim == self.Nd - 1:
-                K_crit = self.rock.SIF_crit * np.ones((self.Nd, g.num_faces))
+            elif g.dim == self._Nd - 1:
+                K_crit = self.rock.SIF_crit * np.ones((self._Nd, g.num_faces))
                 pp.initialize_data(
                     g,
                     d,
@@ -1201,7 +1196,6 @@ class THMPropagationModel(TensilePropagation):
                         "friction_coefficient": self.rock.FRICTION_COEFFICIENT,
                         "contact_mechanics_numerical_parameter": 1e1,
                         "dilation_angle": np.radians(3),
-                        "time": self.time,
                         "SIFs_critical": K_crit,
                     },
                 )
@@ -1216,23 +1210,23 @@ class THMPropagationModel(TensilePropagation):
                 {"mu": self.rock.MU, "lambda": self.rock.LAMBDA},
             )
 
-    def set_scalar_parameters(self):
+    def _set_scalar_parameters(self):
 
         for g, d in self.gb:
-            specific_volumes = self.specific_volumes(g)
+            specific_volumes = self._specific_volumes(g)
 
             # Define boundary conditions for flow
-            bc = self.bc_type_scalar(g)
+            bc = self._bc_type_scalar(g)
             # Set boundary condition values
-            bc_values = self.bc_values_scalar(g)
+            bc_values = self._bc_values_scalar(g)
 
-            biot_coefficient = self.biot_alpha(g)
+            biot_coefficient = self._biot_alpha(g)
             compressibility = self.fluid.COMPRESSIBILITY
 
-            mass_weight = compressibility * self.porosity(g)
-            if g.dim == self.Nd:
+            mass_weight = compressibility * self._porosity(g)
+            if g.dim == self._Nd:
                 mass_weight += (
-                    biot_coefficient - self.porosity(g)
+                    biot_coefficient - self._porosity(g)
                 ) / self.rock.BULK_MODULUS
 
             mass_weight *= self.scalar_scale * specific_volumes
@@ -1247,15 +1241,16 @@ class THMPropagationModel(TensilePropagation):
                     "mass_weight": mass_weight,
                     "biot_alpha": biot_coefficient,
                     "time_step": self.time_step,
-                    "ambient_dimension": self.Nd,
-                    "source": self.source_scalar(g),
+                    "ambient_dimension": self._Nd,
+                    "source": self._source_scalar(g),
                 },
             )
 
-            t2s_coupling = (
-                self.scalar_temperature_coupling_coefficient(g)
-                * specific_volumes
-                * self.temperature_scale
+            b_f = self.fluid.thermal_expansion(0)
+            b_s = 3 * self.rock.THERMAL_EXPANSION
+
+            t2s_coupling = -(
+                self._effective(g, b_f, b_s) * specific_volumes * self.temperature_scale
             )
             pp.initialize_data(
                 g,
@@ -1263,49 +1258,49 @@ class THMPropagationModel(TensilePropagation):
                 self.t2s_parameter_key,
                 {"mass_weight": t2s_coupling, "time_step": self.time_step},
             )
-        self.set_vector_source()
+        self._set_vector_source()
 
-        self.set_permeability_from_aperture()
+        self._set_permeability_from_aperture()
 
-    def set_temperature_parameters(self):
+    def _set_temperature_parameters(self):
         """temperature parameters.
         The entire equation is divided by the initial temperature in Kelvin.
         """
+        T0 = self.T_0_Kelvin
+        div_T_scale = self.temperature_scale / self.length_scale ** 2 / T0
+        kappa_f = self.fluid.thermal_conductivity() * div_T_scale
+        kappa_s = self.rock.thermal_conductivity() * div_T_scale
 
+        heat_cap_s = (
+            self.rock.specific_heat_capacity(self.background_temp_C) * self.rock.DENSITY
+        )
         for g, d in self.gb:
-            T0 = self.T_0_Kelvin
-            div_T_scale = self.temperature_scale / self.length_scale ** 2 / T0
-            kappa_f = self.fluid.thermal_conductivity() * div_T_scale
-            kappa_s = self.rock.thermal_conductivity() * div_T_scale
 
-            heat_capacity_s = (
-                self.rock.specific_heat_capacity(self.background_temp_C)
-                * self.rock.DENSITY
-            )
-            heat_capacity_f = self.fluid_density(g) * self.fluid.specific_heat_capacity(
+            heat_cap_f = self._fluid_density(g) * self.fluid.specific_heat_capacity(
                 self.background_temp_C
             )
             # Aperture and cross sectional area
-            specific_volumes = self.specific_volumes(g)
+            specific_volumes = self._specific_volumes(g)
             # Define boundary conditions for flow
-            bc = self.bc_type_temperature(g)
+            bc = self._bc_type_temperature(g)
             # Set boundary condition values
-            bc_values = self.bc_values_temperature(g)
+            bc_values = self._bc_values_temperature(g)
             # and source values
-            biot_coefficient = self.biot_beta(g)
+            biot_coefficient = self._biot_beta(g)
 
-            mass_weight = (
-                self._effective(g, heat_capacity_f, heat_capacity_s)
-                * specific_volumes
-                * self.temperature_scale
-                / T0
+            T_k = d[pp.STATE][pp.ITERATE][self.temperature_variable]
+            c_e = self._effective(
+                g,
+                heat_cap_f * (1 - T_k * self.fluid.thermal_expansion(0)),
+                heat_cap_s * (1 - T_k * 3 * self.rock.THERMAL_EXPANSION),
             )
+            mass_weight = c_e * specific_volumes * self.temperature_scale / T0
 
             thermal_conductivity = pp.SecondOrderTensor(
                 self._effective(g, kappa_f, kappa_s) * specific_volumes
             )
             # darcy_fluxes are length scaled already
-            advection_weight = heat_capacity_f * self.temperature_scale / T0
+            advection_weight = heat_cap_f * self.temperature_scale / T0
 
             pp.initialize_data(
                 g,
@@ -1319,16 +1314,17 @@ class THMPropagationModel(TensilePropagation):
                     "advection_weight": advection_weight,
                     "biot_alpha": biot_coefficient,
                     "time_step": self.time_step,
-                    "source": self.source_temperature(g),
-                    "ambient_dimension": self.Nd,
+                    "source": self._source_temperature(g),
+                    "ambient_dimension": self._Nd,
                 },
             )
 
-            s2t_coupling = (
-                self.scalar_temperature_coupling_coefficient(g)
-                * specific_volumes
-                * self.scalar_scale
+            s2t_e = self._effective(
+                g,
+                heat_cap_f * self.fluid.COMPRESSIBILITY,
+                heat_cap_s / self.rock.BULK_MODULUS,
             )
+            s2t_coupling = s2t_e * specific_volumes * self.scalar_scale * T_k / T0
             pp.initialize_data(
                 g,
                 d,
@@ -1339,13 +1335,10 @@ class THMPropagationModel(TensilePropagation):
         for e, data_edge in self.gb.edges():
             g_l, g_h = self.gb.nodes_of_edge(e)
             mg = data_edge["mortar_grid"]
-            # T0 = self.T_0_Kelvin + self._T(mg)
-            div_T_scale = (
-                self.temperature_scale / self.length_scale ** 2 / self.T_0_Kelvin
-            )
+            div_T_scale = self.temperature_scale / self.length_scale ** 2 / T0
             kappa_f = self.fluid.thermal_conductivity() * div_T_scale
-            a_l = self.aperture(g_l)
-            V_h = self.specific_volumes(g_h)
+            a_l = self._aperture(g_l)
+            V_h = self._specific_volumes(g_h)
             a_mortar = mg.secondary_to_mortar_avg() * a_l
             kappa_n = 2 / a_mortar * kappa_f
             tr = np.abs(g_h.cell_faces)
@@ -1359,14 +1352,14 @@ class THMPropagationModel(TensilePropagation):
             )
 
     # BCs. Assumes _p_and_T_dir_faces
-    def bc_type_scalar(self, g) -> pp.BoundaryCondition:
+    def _bc_type_scalar(self, g) -> pp.BoundaryCondition:
         return pp.BoundaryCondition(g, self._p_and_T_dir_faces(g), "dir")
 
-    def bc_type_temperature(self, g) -> pp.BoundaryCondition:
+    def _bc_type_temperature(self, g) -> pp.BoundaryCondition:
         return pp.BoundaryCondition(g, self._p_and_T_dir_faces(g), "dir")
 
     # Common parameters
-    def set_rock_and_fluid(self):
+    def _set_rock_and_fluid(self):
         """
         Set rock and fluid properties to those of granite and water.
         We ignore all temperature dependencies of the parameters.
@@ -1374,29 +1367,29 @@ class THMPropagationModel(TensilePropagation):
         self.rock = Granite()
         self.fluid = Water()
 
-    def porosity(self, g) -> float:
-        if g.dim == self.Nd:
+    def _porosity(self, g) -> float:
+        if g.dim == self._Nd:
             return 0.05
         else:
             return 1.0
 
     def _effective(self, g, param_f, param_s) -> float:
         """Compute effective thermal parameter as porosity weighted sum."""
-        phi = self.porosity(g)
+        phi = self._porosity(g)
         return phi * param_f + (1 - phi) * param_s
 
-    def biot_alpha(self, g) -> np.ndarray:
-        if g.dim == self.Nd:
+    def _biot_alpha(self, g) -> np.ndarray:
+        if g.dim == self._Nd:
             return 0.8
         else:
             return 1.0
 
-    def biot_beta(self, g):
+    def _biot_beta(self, g):
         """
         For TM, the coefficient is the product of the bulk modulus (=inverse of
         the compressibility) and the volumetric thermal expansion coefficient.
         """
-        if g.dim == self.Nd:
+        if g.dim == self._Nd:
             # Factor 3 for volumetric/linear, since the pp.Granite
             # thermal expansion expansion coefficient is the linear one at 20 degrees C.
             return self.rock.BULK_MODULUS * 3 * self.rock.THERMAL_EXPANSION
@@ -1405,36 +1398,20 @@ class THMPropagationModel(TensilePropagation):
             # see Eq. (xx)
             iterate = self.gb.node_props(g)[pp.STATE][pp.ITERATE]
             T_k = iterate[self.temperature_variable] * self.temperature_scale
-            T0K = self.T_0_Kelvin
+            c_f = self.fluid.specific_heat_capacity()
+            beta = T_k / self.T_0_Kelvin * self._fluid_density(g) * c_f
+            return beta
 
-            return T_k / T0K * self.fluid_density(g)
-
-    def scalar_temperature_coupling_coefficient(self, g) -> float:
-        """
-        The temperature-pressure coupling coefficient is porosity times thermal
-        expansion. The pressure and
-        scalar scale must be accounted for wherever this coefficient is used.
-        """
-        b_f = self.fluid.thermal_expansion(self.background_temp_C)
-        if g.dim < self.Nd:
-            coeff = -b_f
-        else:
-            b_s = self.rock.THERMAL_EXPANSION
-            phi = self.porosity(g)
-            coeff = -(phi * b_f + (self.biot_alpha(g) - phi) * b_s)
-            # coeff = -self._effective(g, b_f, b_s)
-        return coeff
-
-    def fluid_density(self, g, dp=None, dT=None) -> np.ndarray:
+    def _fluid_density(self, g, dp=None, dT=None) -> np.ndarray:
         """Density computed from current pressure and temperature solution, both
         taken from the previous iterate.
 
-        \rho = \rho_0 * exp[ compressibility * (p - p_0)
-                            + thermal_expansion * (T-T_0) ],
+        \rho = \rho_0 * exp[  compressibility * (p - p_0)
+                            - thermal_expansion * (T-T_0) ],
 
         with    \rho_0 = 1000
                 p_0 = 1 atm
-                T_0 = 20 degrees C
+                T_0 = 20 degrees C = 293 K
 
         Clipping of the solution to aid convergence. Should not affect the
         converged solution given the chosen bounds.
@@ -1442,14 +1419,17 @@ class THMPropagationModel(TensilePropagation):
         iterate = self.gb.node_props(g)[pp.STATE][pp.ITERATE]
         if dp is None:
             p_k = iterate[self.scalar_variable] * self.scalar_scale
-            dp = np.clip(p_k, a_min=-1e10, a_max=1e10)
+            # dp = np.clip(p_k, a_min=-1e8, a_max=1e8)
             # Use hydrostatic pressure as reference
-            dp = dp - pp.ATMOSPHERIC_PRESSURE
+            dp = p_k - pp.ATMOSPHERIC_PRESSURE
         if dT is None:
             T_k = iterate[self.temperature_variable] * self.temperature_scale
-            dT = np.clip(T_k, a_min=-self.T_0_Kelvin, a_max=self.T_0_Kelvin)
             # Use 20 degrees C as reference
-            dT = dT - (20 - self.background_temp_C)
+            # dT = pp.KELKIN_to_CELSIUS(T_k) - 20
+            T_0 = self.T_0_Kelvin
+            dT = T_k - T_0
+            lim = T_0 / 3
+            dT = np.clip(dT, a_min=-lim, a_max=lim)
 
         rho_0 = 1e3 * (pp.KILOGRAM / pp.METER ** 3) * np.ones(g.num_cells)
         rho = rho_0 * np.exp(
@@ -1457,7 +1437,7 @@ class THMPropagationModel(TensilePropagation):
         )
         return rho
 
-    def set_permeability_from_aperture(self):
+    def _set_permeability_from_aperture(self):
         """
         Cubic law in fractures, rock permeability in the matrix.
         """
@@ -1466,16 +1446,16 @@ class THMPropagationModel(TensilePropagation):
         gb = self.gb
         key = self.scalar_parameter_key
         for g, d in gb:
-            if g.dim < self.Nd:
+            if g.dim < self._Nd:
                 # Use cubic law in fractures. First compute the unscaled
                 # permeability
-                apertures = self.aperture(g, from_iterate=True)
+                apertures = self._aperture(g, from_iterate=True)
                 apertures_unscaled = apertures * self.length_scale
                 k = np.power(apertures_unscaled, 2) / 12 / viscosity
                 d[pp.PARAMETERS][key]["perm_nu"] = k
                 # Multiply with the cross-sectional area, which equals the apertures
                 # for 2d fractures in 3d
-                specific_volumes = self.specific_volumes(g, True)
+                specific_volumes = self._specific_volumes(g, True)
 
                 k = k * specific_volumes
 
@@ -1497,9 +1477,9 @@ class THMPropagationModel(TensilePropagation):
             mg = d["mortar_grid"]
             g_l, g_h = gb.nodes_of_edge(e)
             data_l = gb.node_props(g_l)
-            a = self.aperture(g_l, True)
-            V = self.specific_volumes(g_l, True)
-            V_h = self.specific_volumes(g_h, True)
+            a = self._aperture(g_l, True)
+            V = self._specific_volumes(g_l, True)
+            V_h = self._specific_volumes(g_h, True)
             # We assume isotropic permeability in the fracture, i.e. the normal
             # permeability equals the tangential one
             k_s = data_l[pp.PARAMETERS][key]["second_order_tensor"].values[0, 0]
@@ -1510,7 +1490,7 @@ class THMPropagationModel(TensilePropagation):
             kn = kn * V_j
             pp.initialize_data(mg, d, key, {"normal_diffusivity": kn})
 
-    def source_scalar(self, g) -> np.ndarray:
+    def _source_scalar(self, g) -> np.ndarray:
         """
         Source term for the scalar equation.
         In addition to regular source terms, we add a contribution compensating
@@ -1523,7 +1503,7 @@ class THMPropagationModel(TensilePropagation):
         this is not incorporated in ScalarSource, hence we do it here.
         """
         rhs = np.zeros(g.num_cells)
-        if g.dim < self.Nd:
+        if g.dim < self._Nd:
             d = self.gb.node_props(g)
             new_cells = d.get("new_cells", np.array([], dtype=np.int))
             added_volume = self.initial_aperture * g.cell_volumes[new_cells]
@@ -1531,13 +1511,13 @@ class THMPropagationModel(TensilePropagation):
 
         return rhs
 
-    def source_mechanics(self, g) -> np.ndarray:
+    def _source_mechanics(self, g) -> np.ndarray:
         """
         Gravity term.
         """
-        values = np.zeros((self.Nd, g.num_cells))
+        values = np.zeros((self._Nd, g.num_cells))
         if self.gravity_on:
-            values[self.Nd - 1] = (
+            values[self._Nd - 1] = (
                 pp.GRAVITY_ACCELERATION
                 * self.rock.DENSITY
                 * g.cell_volumes
@@ -1547,18 +1527,18 @@ class THMPropagationModel(TensilePropagation):
             )
         return values.ravel("F")
 
-    def set_vector_source(self):
+    def _set_vector_source(self):
         if not getattr(self, "gravity_on"):
             return
         for g, d in self.gb:
             grho = (
                 pp.GRAVITY_ACCELERATION
-                * self.fluid_density(g)
+                * self._fluid_density(g)
                 / self.scalar_scale
                 * self.length_scale
             )
-            gr = np.zeros((self.Nd, g.num_cells))
-            gr[self.Nd - 1, :] = -grho
+            gr = np.zeros((self._Nd, g.num_cells))
+            gr[self._Nd - 1, :] = -grho
             d[pp.PARAMETERS][self.scalar_parameter_key]["vector_source"] = gr.ravel("F")
         for e, data_edge in self.gb.edges():
             g1, g2 = self.gb.nodes_of_edge(e)
@@ -1566,11 +1546,11 @@ class THMPropagationModel(TensilePropagation):
             mg = data_edge["mortar_grid"]
             grho = (
                 mg.secondary_to_mortar_avg()
-                * params_l["vector_source"][self.Nd - 1 :: self.Nd]
+                * params_l["vector_source"][self._Nd - 1 :: self._Nd]
             )
-            a = mg.secondary_to_mortar_avg() * self.aperture(g1)
-            gravity = np.zeros((self.Nd, mg.num_cells))
-            gravity[self.Nd - 1, :] = grho * a / 2
+            a = mg.secondary_to_mortar_avg() * self._aperture(g1)
+            gravity = np.zeros((self._Nd, mg.num_cells))
+            gravity[self._Nd - 1, :] = grho * a / 2
 
             data_edge = pp.initialize_data(
                 e,
@@ -1589,7 +1569,7 @@ class THMPropagationModel(TensilePropagation):
         )
         self.export_times = []
 
-    def export_step(self):
+    def _export_step(self):
         """
         Export the current solution to vtu. The method sets the desired values in d[pp.STATE].
         For some fields, it provides zeros in the dimensions where the variable is not defined,
@@ -1606,7 +1586,7 @@ class THMPropagationModel(TensilePropagation):
             d[pp.STATE]["cell_centers"] = g.cell_centers.copy()
             ## First export Darcy fluxes:
             dis = d[pp.PARAMETERS][self.temperature_parameter_key]["darcy_flux"]
-            if g.dim == self.Nd:
+            if g.dim == self._Nd:
                 for e in self.gb.edges_of_node(g):
                     d_e = self.gb.edge_props(e[0])
                     mg = d_e["mortar_grid"]
@@ -1634,15 +1614,15 @@ class THMPropagationModel(TensilePropagation):
             d[pp.STATE]["fluxes_exp"] = cell_flux.reshape((3, g.num_cells), order="F")
 
             ## Then handle u and contact traction, which are dimension dependent
-            if g.dim == self.Nd:
+            if g.dim == self._Nd:
                 pad_zeros = np.zeros((3 - g.dim, g.num_cells))
                 u = iterate[self.displacement_variable].reshape(
-                    (self.Nd, -1), order="F"
+                    (self._Nd, -1), order="F"
                 )
                 u_exp = np.vstack((u * self.length_scale, pad_zeros))
                 d[pp.STATE]["u_exp"] = u_exp
                 d[pp.STATE]["traction_exp"] = np.zeros(d[pp.STATE]["u_exp"].shape)
-            elif g.dim == (self.Nd - 1):
+            elif g.dim == (self._Nd - 1):
                 pad_zeros = np.zeros((2 - g.dim, g.num_cells))
                 g_h = self.gb.node_neighbors(g)[0]
                 data_edge = self.gb.edge_props((g, g_h))
@@ -1654,7 +1634,7 @@ class THMPropagationModel(TensilePropagation):
                 d[pp.STATE]["u_exp"] = u_exp
                 traction = (
                     iterate[self.contact_traction_variable].reshape(
-                        (self.Nd, -1), order="F"
+                        (self._Nd, -1), order="F"
                     )
                     / g.cell_volumes
                 )
@@ -1664,7 +1644,7 @@ class THMPropagationModel(TensilePropagation):
                 )
 
             ## Apertures, p and T
-            d[pp.STATE]["aperture_exp"] = self.aperture(g) * self.length_scale
+            d[pp.STATE]["aperture_exp"] = self._aperture(g) * self.length_scale
 
             d[pp.STATE]["p_exp"] = iterate[self.scalar_variable] * self.scalar_scale
 
@@ -1672,18 +1652,18 @@ class THMPropagationModel(TensilePropagation):
                 iterate[self.temperature_variable] * self.temperature_scale
             )
 
-        self.exporter.write_vtk(self.export_fields, time_step=self.time, grid=self.gb)
+        self.exporter.write_vtu(self.export_fields, time_step=self.time, grid=self.gb)
         self.export_times.append(self.time)
 
-        new_sizes = np.zeros(len(self.gb.grids_of_dimension(self.Nd - 1)))
-        for i, g in enumerate(self.gb.grids_of_dimension(self.Nd - 1)):
+        new_sizes = np.zeros(len(self.gb.grids_of_dimension(self._Nd - 1)))
+        for i, g in enumerate(self.gb.grids_of_dimension(self._Nd - 1)):
             new_sizes[i] = np.sum(g.cell_volumes) * self.length_scale ** 2
         if hasattr(self, "fracture_sizes"):
             self.fracture_sizes = np.vstack((self.fracture_sizes, new_sizes))
         else:
             self.fracture_sizes = new_sizes
 
-    def export_pvd(self):
+    def _export_pvd(self):
         """
         At the end of the simulation, after the final vtu file has been exported, the
         pvd file for the whole simulation is written by calling this method.
@@ -1708,13 +1688,13 @@ class THMPropagationModel(TensilePropagation):
         # Ugly, but doesn't affect solution
         assembler = self.assembler
         variable_names = []
-        for pair in assembler.block_dof.keys():
+        for pair in self.dof_manager.block_dof.keys():
             variable_names.append(pair[1])
 
-        dof = np.cumsum(np.append(0, np.asarray(assembler.full_dof)))
+        dof = np.cumsum(np.append(0, np.asarray(self.dof_manager.full_dof)))
 
         for var_name in set(variable_names):
-            for pair, bi in assembler.block_dof.items():
+            for pair, bi in self.dof_manager.block_dof.items():
                 g = pair[0]
                 name = pair[1]
                 if name != var_name:
@@ -1722,10 +1702,8 @@ class THMPropagationModel(TensilePropagation):
                 if isinstance(g, tuple):
                     continue
                 else:
-                    data = self.gb.node_props(g)
-
                     # g is a node (not edge)
-
+                    data = self.gb.node_props(g)
                     # Save displacement for export. The export hacks are getting ugly!
                     if name == self.displacement_variable:
                         u = solution_vector[dof[bi] : dof[bi + 1]]

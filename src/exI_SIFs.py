@@ -1,7 +1,5 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-Problem description: Single horizontal fracture in an infinite domain. 
+Problem description: Single horizontal fracture in an infinite domain.
 Pressure p0 acting on the fracture walls.
 
 -----------------------
@@ -16,26 +14,25 @@ Pressure p0 acting on the fracture walls.
 -----------------------
 
 
-Analytical solution due to Sneddon, 1946: 
+Analytical solution due to Sneddon, 1946:
     The distribution of stress in the neighbourhood of a crack in an inelastic solid
 
 The analytical solution is used to assign Dirichlet boundary condition using the
 boundary element method, see
 Keilegavlen et al, 2020:
-    PorePy: An Open-Source Software for Simulation of Multi-physics Processes 
+    PorePy: An Open-Source Software for Simulation of Multi-physics Processes
     in Fractured Porous Media
 """
 
+import logging
+import os
+
 import numpy as np
-import scipy.sparse.linalg as spla
-
-import os, logging
-
 import porepy as pp
+import scipy.sparse.linalg as spla
 
 from fracture_propagation_model import TensilePropagation
 from utils import write_pickle
-
 
 logger = logging.getLogger(__name__)
 
@@ -261,7 +258,7 @@ class SneddonSIFTest(TensilePropagation, pp.ContactMechanics):
         self.Nd = self.gb.dim_max()
         self.n_frac = len(gb.grids_of_dimension(self.Nd - 1))
 
-    def bc_type(self, g: pp.Grid) -> pp.BoundaryConditionVectorial:
+    def _bc_type(self, g: pp.Grid) -> pp.BoundaryConditionVectorial:
         """
         We set Neumann values imitating an anisotropic background stress regime on all
         but three faces, which are fixed to ensure a unique solution.
@@ -269,7 +266,7 @@ class SneddonSIFTest(TensilePropagation, pp.ContactMechanics):
         bc = pp.BoundaryConditionVectorial(g, g.get_all_boundary_faces(), "dir")
         return bc
 
-    def bc_values(self, g: pp.Grid) -> np.ndarray:
+    def _bc_values(self, g: pp.Grid) -> np.ndarray:
         """
         Assign displacement values, computed using the boundary element method,
         see Keilegavlen et al.
@@ -286,7 +283,7 @@ class SneddonSIFTest(TensilePropagation, pp.ContactMechanics):
         bc_values = np.zeros((g.dim, g.num_faces))
 
         # Retrieve the boundaries where values are assigned
-        all_bf, *_ = self.domain_boundary_sides(g)
+        all_bf, *_ = self._domain_boundary_sides(g)
         nu = self.params["poisson"]
 
         theta = self.params["inclination"]
@@ -302,7 +299,7 @@ class SneddonSIFTest(TensilePropagation, pp.ContactMechanics):
 
         return bc_values
 
-    def set_parameters(self):
+    def _set_parameters(self):
         poisson = self.params["poisson"]
         young = 1
         shear = young / (2 * (1 + poisson))
@@ -311,7 +308,7 @@ class SneddonSIFTest(TensilePropagation, pp.ContactMechanics):
 
         for g, d in self.gb:
             if g.dim == self.Nd:
-                bc, bc_val = self.bc_type(g), self.bc_values(g)
+                bc, bc_val = self._bc_type(g), self._bc_values(g)
 
                 # Rock parameters
                 lam = 2 * shear * poisson / (1 - 2 * poisson) * np.ones(g.num_cells)
@@ -358,7 +355,10 @@ class SneddonSIFTest(TensilePropagation, pp.ContactMechanics):
             mg = d["mortar_grid"]
             # Parameters for the surface diffusion. Not used as of now.
             pp.initialize_data(
-                mg, d, self.mechanics_parameter_key, {},
+                mg,
+                d,
+                self.mechanics_parameter_key,
+                {},
             )
 
     def analytical_apertures(self, eta=None):
@@ -421,9 +421,9 @@ class SneddonSIFTest(TensilePropagation, pp.ContactMechanics):
                 )
                 d[pp.STATE]["traction_exp"] = np.vstack((traction, pad_zeros))
         export_fields = ["u_exp", "traction_exp"]
-        self.exporter.write_vtk(export_fields)
+        self.exporter.write_vtu(export_fields)
 
-    def initial_condition(self) -> None:
+    def _initial_condition(self) -> None:
         """
         Initialize fracture pressure.
 
@@ -431,7 +431,7 @@ class SneddonSIFTest(TensilePropagation, pp.ContactMechanics):
         -------
         None
         """
-        super().initial_condition()
+        super()._initial_condition()
         for g, d in self.gb:
             if g.dim == self.Nd - 1:
                 pp.set_state(
@@ -442,18 +442,20 @@ class SneddonSIFTest(TensilePropagation, pp.ContactMechanics):
                     },
                 )
 
-    def assign_variables(self) -> None:
+    def _assign_variables(self) -> None:
         """
         Assign primary variables to the nodes and edges of the grid bucket:
         """
-        super().assign_variables()
+        super()._assign_variables()
         for g, d in self.gb:
             if g.dim == self.Nd - 1:
                 d[pp.PRIMARY_VARIABLES].update(
-                    {self.scalar_variable: {"cells": 1},}
+                    {
+                        self.scalar_variable: {"cells": 1},
+                    }
                 )
 
-    def assign_discretizations(self) -> None:
+    def _assign_discretizations(self) -> None:
         """
         Assign discretizations to the nodes and edges of the grid bucket.
 
@@ -461,7 +463,7 @@ class SneddonSIFTest(TensilePropagation, pp.ContactMechanics):
         subtract the fracture pressure contribution for the contact traction. This
         should not be done if the scalar variable is temperature.
         """
-        super().assign_discretizations()
+        super()._assign_discretizations()
 
         # Shorthand
         key_s, key_m = self.scalar_parameter_key, self.mechanics_parameter_key
@@ -481,7 +483,12 @@ class SneddonSIFTest(TensilePropagation, pp.ContactMechanics):
 
             elif g.dim == self.Nd - 1:
                 d[pp.DISCRETIZATION].update(
-                    {var_s: {"mass": mass_disc_s, "source": source_disc_s,},}
+                    {
+                        var_s: {
+                            "mass": mass_disc_s,
+                            "source": source_disc_s,
+                        },
+                    }
                 )
 
         fracture_scalar_to_force_balance = pp.FractureScalarToForceBalance(
@@ -530,7 +537,7 @@ class SneddonSIFTest(TensilePropagation, pp.ContactMechanics):
             error = np.nan if diverged else 0
             return error, converged, diverged
 
-        mech_dof = self.assembler.dof_ind(g_max, self.displacement_variable)
+        mech_dof = self.dof_manager.dof_ind(g_max, self.displacement_variable)
 
         # Also find indices for the contact variables
         contact_dof = np.array([], dtype=np.int)
@@ -540,13 +547,13 @@ class SneddonSIFTest(TensilePropagation, pp.ContactMechanics):
                 contact_dof = np.hstack(
                     (
                         contact_dof,
-                        self.assembler.dof_ind(e[1], self.contact_traction_variable),
+                        self.dof_manager.dof_ind(e[1], self.contact_traction_variable),
                     )
                 )
                 jump_dof = np.hstack(
                     (
                         contact_dof,
-                        self.assembler.dof_ind(e, self.mortar_displacement_variable),
+                        self.dof_manager.dof_ind(e, self.mortar_displacement_variable),
                     )
                 )
 
@@ -668,13 +675,13 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     # Axes for the error array are poisson ratios, mesh sizes and the three
     # errors computed (for apertures, SIF_I, SIF_II).
-    all_errors = np.empty((4, 4, 3))
+    all_errors = np.empty((3, 4, 3))
     poisson_ratios = np.linspace(0.1, 0.4, all_errors.shape[0])
 
     simplex = 1 == 1
     if simplex:
         file_name = "SIFs_simplex"
-        mesh_sizes = np.array([2, 1, 0.5, 0.25, 0.125])
+        mesh_sizes = np.array([2, 1, 0.5])  # , 0.25, 0.125])
         mesh_sizes = mesh_sizes[: all_errors.shape[1]]
     else:
         beta = np.pi / 2
@@ -698,7 +705,7 @@ if __name__ == "__main__":
         "boundary_traction": 1e-4,
         "simplex": simplex,
         "n_cells": [nx, nx, 4],
-        "prepare_umfpack": True,
+        "prepare_umfpack": False,
     }
 
     if not os.path.exists(folder_name):
@@ -722,4 +729,3 @@ if __name__ == "__main__":
         "mesh_sizes": mesh_sizes,
     }
     write_pickle(data, folder_name + "/all_errors")
-    # Export and save data
